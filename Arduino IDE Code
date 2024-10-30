@@ -1,0 +1,390 @@
+#include <Servo.h>                                                             //servo library
+#include <SimpleKalmanFilter.h>                                                //UNO interact with Sensors   
+#include <SoftwareSerial.h>                                                    //Serial obj to commu with SIM800L
+#include <EEPROM.h>                                                            //Allow us to R/W data on hard disk
+SoftwareSerial sim(3, 2);                                                      //SIM800L: TX -> RX 3 UNO
+                                                                               //SIM800L: RX -> TX U NO
+SimpleKalmanFilter bo_loc(2, 2, 0.001);                                        //(measure,est/sai so,process noise)
+
+//Define pins
+#define MQ-2Pin A0 
+#define buzzerPin 9         // buzzer
+#define servo1Pin 11        // servo1 open/close doorway
+#define relay1Pin 12        // fan
+
+// Used variables
+int gtcai;
+int smokeThreshold;                                              
+int smoke, t, a;
+int manual, autoo;
+String phoneNumber;                                          
+String sms;                                                      
+Servo servo1;                                                 
+
+
+void writeThreshold(int threshold) {                            //Write Threshold to EEPROM with .write(adr, val)
+  EEPROM.write(10, threshold / 100);                            // Ghi chữ số hàng trăm 
+  EEPROM.write(11, (threshold % 100) / 10);                     // Ghi chữ số hàng chục
+  EEPROM.write(12, threshold % 10);                             // Ghi chữ số hàng đơn vị
+}
+   
+int readGasThreshold() {                                        //Read Threshold from EEPROM
+  //read từ hàng trăm->đơn vị
+  int threshold = 100 * EEPROM.read(10) + 10 * EEPROM.read(11) + EEPROM.read(12);
+  Serial.print("Nguong canh bao: ");                  
+  Serial.println(threshold);                                    //Print the threshold on the SerialMonitor
+  return threshold;
+}
+
+void writePhoneNumber(String phoneNumber) {                     //Function- write PhoneNumber to EEPROM
+  for (int i = 0; i < 5; i++) {                                 //Divide 10-digit PhoneNumber into 5 pairs
+    int startPos = i * 2;                                       //5-index of the startPos of each pair
+    String pair = phoneNumber.substring(startPos, startPos + 2);//5 substring represent 5 pairs of 2-digit 
+    int number = pair.toInt();                                  //Convert pair into int; E.g:24 assigned to “24”
+    EEPROM.write(i, number);                                    //Write the int value to the address i each loop
+  }
+  Serial.print("So dien thoai: ");                                 
+  Serial.println(phoneNumber);                                  //Print PhoneNumber to the SerialMonitor
+}
+
+String readPhoneNumber() {                                      //Read PhoneNumber from EEPROM,return as a string
+  String phoneNumber = "";                                      //Declare phoneNumber as null
+  for (int i = 0; i < 5; i++) {                                 //<5 cause of (i) for 5 indexes when WriteToEEPROM
+    int number1 = EEPROM.read(i);                               //Store the readNumbers into number1
+    if (number1 < 10){                                          //Check if the leading “0” is missing           
+      phoneNumber += "0" + String(number1);                     //If yes add the missing “0” then the readNumbers
+    }
+    else {
+      phoneNumber += String(number1);                           //Else no “0” will be added 
+    }
+  }
+  Serial.println(phoneNumber);                                  //Print phoneNumber to the serialMonitor
+  return phoneNumber;                                           //Return phoneNumber as string
+}
+
+/*String tokenization by converting into C-style string to extract nameSim(“S” or “N”)and the associated value
+in the message; cause Arduino libraries expects C-string,function works directly with memory addresses, pointers */ 
+String nameSim;                                                 
+String paraSim;
+void setPhoneNumber_Threshold(String sms) {                      
+    //Serial.println(sms);
+    char  str_sms[50];                                        //Declare the str_sms up to 50 chars
+    sms.toCharArray(str_sms, sms.length()+1);                 //Convert string to C-style string(char array)
+                                                              /*(targeted array, length()+1: maximum length to
+                                                              copy by including the “\0” NULL terminator)*/
+    char * p;                                                 //p: a pointer to a char
+    p = strtok(str_sms, "_");                                 //Function strtok used tokenize str_sms using ”_”
+    nameSim = p;                                              //assign the 1st token(before the 1st ”_”) to nameSim
+    Serial.println(nameSim);                                  
+    while(p != NULL) {                                        //Loop as long as p is not NULL->to extract all
+        p = strtok(NULL, "_");                                
+        if(p != NULL) {
+           //  Serial.println(paraSim);
+           paraSim = p;                                       //paraSim is the phone number
+        }
+    }
+    Serial.println(paraSim);                                  
+    Serial.println(paraSim.length());                         //Print out on the SerialMonitor to double-check
+    if (nameSim == "S") {                                     //Differentiate “S”, “N”
+      Serial.println("DD " + paraSim.length());               //Print out on the SerialMonitor to check for Độ Dài
+      if (paraSim.length() < 10 || paraSim.length() > 11) {   //If the phone number is unsatisfied -> Do nothing
+//        phanhoi2(0);                                       
+      } else {                                                //If yes
+        writePhoneNumber(paraSim);                            //Recall the function to write phoneNumber to EEPROM 
+        Serial.println("SDT: "+paraSim);                      //E.g: SDT: 09xxxxxxxx       
+        digitalWrite(buzzerPin, HIGH);                        //Buzzes 1 time to notify
+        delay(1000);
+        digitalWrite(buzzerPin, LOW);                         //Stop buzzing after 1 sec
+        writePhoneNumber(paraSim);                            
+        phoneNumber = readPhoneNumber();                      //Recall the function to read phoneNumber from EEPROM
+        phanhoi(9);                                           //Send the phone number to notify the user
+        delay(1000);                                           
+      }
+    }
+    else if (nameSim == "N" ) {                               //set-up theshold by continue to differentiate S,N 
+       //Serial.println("paraSim"+paraSim);
+      int threshold = paraSim.toInt();                        //Let threshold be the int-style converted “N” 
+      //Serial.println("nn"+threshold);  
+      writeThreshold(threshold);                              //Write threshold to EEPROM
+      smokeThreshold = threshold;                             //Assigning
+      Serial.println("Nguong: "+threshold);                   //Print out the threshold on the serial monitor
+      digitalWrite(buzzerPin, HIGH);                          //Buzzes for 1 sec
+      delay(1000);
+      digitalWrite(buzzerPin, LOW);
+      writeThreshold(threshold);                              //Write threshold to EEPROM
+      phanhoi(10);                                            //Function that read threshold from EEPROM then reply
+      delay(1000);
+    }
+}
+
+void setup()                                                  //Setup function
+{
+  Serial.begin(9600);                                         //Open serialCommu,wait for port to open,baud rate    
+  sim.begin(9600);                                //Begin serial commu with Arduino & Arduino IDE(Serial Monitor)                   
+  pinMode(MQ-2Pin, INPUT);                         //Initialize MQ-2 pin 
+  pinMode(buzzerPin, OUTPUT);
+  pinMode(relay1Pin, OUTPUT);
+  sim.println("AT");                               //Initialize Auto-bauder, if well it wil send OK
+
+  while(!sim.available()){                         //Sim not available -> print Connecting on SerialMonitor
+    sim.println("AT");                            
+    delay(1000);
+    Serial.println("Connecting...");  
+  }
+  Serial.println("Connected!");                    //Inform connection by printing on SerialMonitor
+  digitalWrite(buzzerPin, HIGH);                   //Buzzes for 1.5 sec to inform
+  delay(1500);
+  digitalWrite(buzzerPin, LOW);
+                                          //Set-up module’s transmitting speed
+  sim.println("AT+IPR=9600");                      //Initialize SMS function by sending command to SIM800L by UART
+  delay(1000);
+  sim.println("AT+CMGF=1");                       //Select SMS format as text, default format is Protocol Data Unit
+  delay(1000);  
+  sim.println("AT+CNMI=1,2,0,0,0");               //Config new message indication (CNMI) settings
+  //(enable, forward received message to Terminal Equipment(Arduino), 0 additional notis or indications required)
+  delay(1000);
+  sim.println("AT+CMGL=\"REC UNREAD\"");          //Request SIM800L to list all unread messages
+  delay(1000);
+  servo1.attach(servo1Pin);                       //Servo is ready to control    
+  servo1.write(180);                              //Bring servo to the intitial position
+  autoo = 1;                                      //Indicate automatic mode                               
+}
+
+void loop()
+{
+  //digitalread return 0 or 1
+  gtcai = readGasThreshold();
+  smokeThreshold = readGasThreshold();            //Read threshold value
+  phoneNumber = readPhoneNumber();                //Read phone number
+  smoke = analogRead(MQ-2Pin);                     //Read value from MQ-2
+  smoke = bo_loc.updateEstimate(smoke);           //Recall function to update the variable smoke
+  Serial.print("Smoke: ");                        //Print smoke value on the SerialMonitor to supervise
+  Serial.println(smoke);
+  delay(100);
+
+    if (autoo == 1) {                             //Automatic mode     
+      if (smoke > smokeThreshold) {
+        door_open();
+        relay1_on();
+        buz_on();
+        delay(200);
+        if (t<=2) {
+          callNumber1();                              //Call function to alarm 
+          SendMessage(1);                             //Text function to notify
+          delay(500);
+          t++;
+          for ( int i=0; i<100; i++){
+            smoke = analogRead(MQ-2Pin);               //Read smoke value from MQ-2
+            smoke = bo_loc.updateEstimate(smoke);     //Update smoke value continuously
+          }
+        }
+      }
+      else if (smoke < smokeThreshold - 10) {         //Safe (regular) mode
+        door_close();
+        relay1_off();
+        buz_off();
+        t = 0;
+    }
+    check_SMS();                                      //Read SMS messages to check for Automatic/Manual mode
+    delay(200);
+}
+
+//End of the loop function
+
+/*================OUTPUT manipulate functions===================*/
+
+void relay1_on() {     // Bật quạt                      
+  digitalWrite(relay1Pin, HIGH);
+}
+void relay1_off() {   // Tắt quạt
+  digitalWrite(relay1Pin, LOW);
+}
+void door_open() {
+  servo1.attach(servo1Pin);
+  servo1.write(90);                             // Quay động cơ servo 1 về giữa
+  delay(50);
+  servo1.detach();
+}
+void door_close() {
+  servo1.attach(servo1Pin);
+  servo1.write(180);                            // Động cơ servo 1 ở vị trí ban đầu
+  delay(50);
+  servo1.detach();
+}
+void buz_on() {
+  digitalWrite(buzzerPin, HIGH);                // Buzzer ON
+}
+void buz_off() {
+  digitalWrite(buzzerPin, LOW);                 // Buzzer OFF
+}
+/*------------------------------------------------------------------------*/
+
+/*====================Call, sendMessage functions via SIM===================*/
+
+String smsSD1;
+String smsSD2;
+void check_SMS() {
+  if (sim.available()) {
+    sms = sim.readStringUntil('\n');                       //Read SMS till the end of line
+    //setPhoneNumber_Threshold(sms);                              
+    Serial.println("SMS: " + sms);                         //Print to SerialMonitor SMS…
+    if (sms == "TU DONG\r") {                              //If the command is “TU DONG”
+      autoo = 1;
+      phanhoi(0);                                          //Automatic mode
+      Serial.println("Che do tu dong");
+      delay(200);
+    }
+    else if (sms == "MO CUA\r") {
+      door_open();
+      delay(200);
+      phanhoi(2);                                           //Reply opening doorways
+      Serial.println("Gui tin mo cua");
+    }
+    else if (sms == "DONG CUA\r") {
+      door_close();
+      delay(200);
+      phanhoi(3);                                           //Reply closing doorways
+      Serial.println("Gui tin dong cua");
+    }
+    else if (sms == "BAT QUAT HUT\r") {
+      relay1_on();
+      delay(200);
+      phanhoi(4);                                           //Reply turning on fan
+      Serial.println("Gui tin bat quat");
+    }
+    else if (sms == "TAT QUAT HUT\r") {
+      relay1_off();
+      delay(200);
+      phanhoi(5);                                           //Reply turning off fan        
+      Serial.println("Gui tin tat quat");
+    }
+    else if (sms == "GAS\r") {
+      phanhoi(8);                                           //Reply the current gas threshold value
+      Serial.println("Gui khi Gas");
+    }
+    else if (sms == "SDT\r") {
+      phanhoi(9);                                           //Reply checking for the responsible phone number
+      Serial.println("Gui so dien thoai");
+    }
+    else if (sms == "CHE DO\r") {
+      phanhoi(11);                                          //Reply checking for the current running mode
+      Serial.println("Gui che do hien tai");
+    }
+    else if (sms == "SO DU\r") {
+      sim.println("ATD*101#;");                             //Check for the current balance of SIM 
+      delay(1000);
+      for (int i=0; i<9; i++) {                             //Loop reading lines of SIM’s response until “OK”    
+        smsSD1 = sim.readStringUntil('\n');
+        if (smsSD1 != "OK\r") {                
+          smsSD2 = smsSD1;
+        }
+        delay(200);
+      }
+      sim.println("AT+CMGF=1");                           //Config to text mode
+      delay(1000);
+      sim.println("AT+CMGS=\"" + phoneNumber + "\"\r");   //Tell SIM to send phone number to the recipient 
+      delay(1000);
+      sim.println(smsSD2);                                //Send the balance to the recipient
+      Serial.println("Check so du");                      //Log message
+    }
+    delay(50);
+    setPhoneNumber_Threshold(sms);                        //Read and update phone number & threshold
+  }
+}
+
+void SendMessage (int tipe)                              
+{
+  Serial.println ("Gui tin nhan den dien thoai");
+  sim.println("AT+CMGF=1");                               //Config to text mode
+  delay(1500);
+  sim.println("AT+CMGS=\"" + phoneNumber + "\"\r");       //Tell SIM to send phone number to the recipient 
+  delay(1000);
+  switch (tipe)
+  {
+    case 1:
+      sim.println("He Thong Phat Hien Khi Gas Vuot Nguong !!!");
+      delay(100);
+      sim.println((char)26);
+      delay(500);
+      break;
+  }
+}
+
+void callNumber1() {    
+  //Send “ATD” command to SIM800L                                     
+  //F() is an Arduino function to store strings in FLASH memory to optimize
+  sim.print (F("ATD"));  
+  sim.print (phoneNumber);                                   //Call the recipient
+  sim.print (F(";\r\n"));                                    //Command to end the call
+  Serial.println("Thuc hien cuoc goi");
+  Serial.println("SMS: " + sim.readStringUntil('\n'));       //Read and print the SMS message
+}
+
+String smokePre;
+void phanhoi(int tipe) {
+  sim.println("AT+CMGF=1");                                  //Config to text mode
+  delay(1000);
+  sim.println("AT+CMGS=\"" + phoneNumber + "\"\r");          //Send the phone number to the recipient
+  switch (tipe)
+  {
+    case 0:
+      sim.println("Che do TU DONG");
+      delay(100);
+      sim.println((char)26);          
+      delay(1000);
+      break;
+    case 2:
+      sim.println("Mo Cua");
+      delay(100);
+      sim.println((char)26);
+      delay(1000);
+      break;
+    case 3:
+      sim.println("Dong Cua");
+      delay(100);
+      sim.println((char)26);
+      delay(1000);
+      break;  
+    case 4:
+      sim.println("Bat Quat Hut");
+      delay(100);
+      sim.println((char)26);
+      delay(1000);
+      break;
+    case 5:
+      sim.println("Tat Quat Hut");
+      delay(100);
+      sim.println((char)26);
+      delay(1000);
+      break;  
+    case 8:
+      smokePre = String (smoke);
+      sim.println("Gas: \"" + smokePre + "\"\r");
+      delay(100);
+      sim.println((char)26);
+      delay(1000);
+      break;
+    case 9:
+      phoneNumber = readPhoneNumber();
+      sim.println("SDT: \"" + phoneNumber + "\"\r");
+      delay(100);
+      sim.println((char)26);
+      delay(1000);
+      break;
+    case 10:
+      smokePre = String (readGasThreshold());
+      sim.println("Nguong Canh Bao: \"" + smokePre + "\"\r");
+      delay(100);
+      sim.println((char)26);
+      delay(1000);
+      break;
+    case 11:
+      if (autoo == 1){                                     //Reply checking for the current mode
+        sim.println("Che do TU DONG");
+        Serial.println("Che do Auto");
+        delay(100);
+        sim.println((char)26);
+        delay(1000);
+      }
+  }
+}
